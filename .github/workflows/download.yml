@@ -1,15 +1,14 @@
-# cloud2arvan downloader
 name: Download and Upload
 
 on:
   workflow_dispatch:
     inputs:
       url:
-        description: 'File URL'
+        description: "File URL"
         required: true
 
       filename:
-        description: 'Output filename'
+        description: "Output filename"
         required: false
 
 jobs:
