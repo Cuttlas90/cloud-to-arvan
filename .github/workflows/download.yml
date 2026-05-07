@@ -1,1 +1,66 @@
 # cloud2arvan downloader
+name: Download and Upload
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'File URL'
+        required: true
+
+      filename:
+        description: 'Output filename'
+        required: false
+
+jobs:
+  transfer:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Install packages
+        run: |
+          sudo apt update
+          sudo apt install -y aria2 curl unzip
+
+      - name: Install rclone
+        run: |
+          curl https://rclone.org/install.sh | sudo bash
+
+      - name: Download file
+        run: |
+          FILE="${{ github.event.inputs.filename }}"
+
+          if [ -z "$FILE" ]; then
+            FILE=$(basename "${{ github.event.inputs.url }}")
+          fi
+
+          echo "FILE=$FILE" >> $GITHUB_ENV
+
+          aria2c \
+            -x 8 \
+            -s 8 \
+            -k 1M \
+            -o "$FILE" \
+            "${{ github.event.inputs.url }}"
+
+      - name: Configure rclone
+        run: |
+          mkdir -p ~/.config/rclone
+
+          cat > ~/.config/rclone/rclone.conf <<EOF
+          [arvan]
+          type = s3
+          provider = Other
+          access_key_id = ${{ secrets.ARVAN_ACCESS_KEY }}
+          secret_access_key = ${{ secrets.ARVAN_SECRET_KEY }}
+          endpoint = ${{ secrets.ARVAN_ENDPOINT }}
+          EOF
+
+      - name: Upload to Arvan
+        run: |
+          rclone copy \
+            "$FILE" \
+            arvan:${{ secrets.ARVAN_BUCKET }}
+
+      - name: Finished
+        run: echo "Done"
