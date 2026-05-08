@@ -1,4 +1,4 @@
-name: Download and Upload
+name: Download and Upload to Arvan
 
 on:
   workflow_dispatch:
@@ -6,24 +6,44 @@ on:
       url:
         description: "File URL"
         required: true
-
       filename:
         description: "Output filename"
         required: false
+      chunk_size:
+        description: "Chunk size, example: 512M or 1G"
+        required: false
+        default: "512M"
+
+concurrency:
+  group: arvan-downloader
+  cancel-in-progress: false
 
 jobs:
   transfer:
     runs-on: ubuntu-latest
+    timeout-minutes: 350
 
     steps:
       - name: Install packages
         run: |
           sudo apt update
-          sudo apt install -y aria2 curl unzip
+          sudo apt install -y aria2 curl coreutils
 
       - name: Install rclone
         run: |
           curl https://rclone.org/install.sh | sudo bash
+
+      - name: Configure rclone
+        run: |
+          mkdir -p ~/.config/rclone
+          cat > ~/.config/rclone/rclone.conf <<EOF
+          [arvan]
+          type = s3
+          provider = Other
+          access_key_id = ${{ secrets.ARVAN_ACCESS_KEY }}
+          secret_access_key = ${{ secrets.ARVAN_SECRET_KEY }}
+          endpoint = ${{ secrets.ARVAN_ENDPOINT }}
+          EOF
 
       - name: Download file
         run: |
@@ -36,30 +56,68 @@ jobs:
           echo "FILE=$FILE" >> $GITHUB_ENV
 
           aria2c \
-            -x 8 \
-            -s 8 \
+            -x 4 \
+            -s 4 \
             -k 1M \
+            --continue=true \
             -o "$FILE" \
             "${{ github.event.inputs.url }}"
 
-      - name: Configure rclone
+      - name: Create chunks and manifest
         run: |
-          mkdir -p ~/.config/rclone
+          mkdir -p chunks
 
-          cat > ~/.config/rclone/rclone.conf <<EOF
-          [arvan]
-          type = s3
-          provider = Other
-          access_key_id = ${{ secrets.ARVAN_ACCESS_KEY }}
-          secret_access_key = ${{ secrets.ARVAN_SECRET_KEY }}
-          endpoint = ${{ secrets.ARVAN_ENDPOINT }}
-          EOF
+          CHUNK_SIZE="${{ github.event.inputs.chunk_size }}"
 
-      - name: Upload to Arvan
-        run: |
-          rclone copy \
+          split \
+            -b "$CHUNK_SIZE" \
+            -d \
+            -a 5 \
             "$FILE" \
-            arvan:${{ secrets.ARVAN_BUCKET }}
+            "chunks/${FILE}.part-"
+
+          sha256sum "$FILE" > "chunks/${FILE}.sha256"
+
+          ls -lh chunks
+
+      - name: Upload chunks to Arvan with resume
+        run: |
+          REMOTE="arvan:${{ secrets.ARVAN_BUCKET }}/$FILE"
+
+          rclone mkdir "$REMOTE" || true
+
+          for PART in chunks/${FILE}.part-*; do
+            BASENAME=$(basename "$PART")
+
+            echo "Checking $BASENAME"
+
+            if rclone lsf "$REMOTE" | grep -Fxq "$BASENAME"; then
+              echo "Already uploaded, skipping: $BASENAME"
+            else
+              echo "Uploading: $BASENAME"
+
+              rclone copyto \
+                "$PART" \
+                "$REMOTE/$BASENAME" \
+                --progress \
+                --stats 10s \
+                --retries 5 \
+                --low-level-retries 20 \
+                --s3-upload-concurrency 4 \
+                --s3-chunk-size 64M
+            fi
+          done
+
+      - name: Upload checksum file
+        run: |
+          REMOTE="arvan:${{ secrets.ARVAN_BUCKET }}/$FILE"
+
+          rclone copyto \
+            "chunks/${FILE}.sha256" \
+            "$REMOTE/${FILE}.sha256"
 
       - name: Finished
-        run: echo "Done"
+        run: |
+          echo "Done."
+          echo "Uploaded folder:"
+          echo "${{ secrets.ARVAN_BUCKET }}/$FILE"
