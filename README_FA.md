@@ -175,7 +175,7 @@ Actions → Download and Upload to Arvan → Run workflow
 - timeout شود
 - fail شود
 
-کافی است دوباره همان workflow را با همان filename اجرا کنید.
+کافی است دوباره همان workflow را Re-Run کنید.
 
 پارت‌های قبلی:
 
